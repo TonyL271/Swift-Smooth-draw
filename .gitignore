@@ -1,0 +1,3 @@
+.nvim
+MetalDraw/Outputs/*
+!MetalDraw/Outputs/.gitkeep 
