@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7C6600EA4EEBB3F45411A582 /* DLink.metal in Sources */ = {isa = PBXBuildFile; fileRef = AF457C46214B39C0AC2CC9FE /* DLink.metal */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		EA6FF5022DB5AEF800FA7061 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -38,6 +42,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AF457C46214B39C0AC2CC9FE /* DLink.metal */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.metal; path = DLink.metal; sourceTree = "<group>"; };
 		EA6FF4F22DB5AEF600FA7061 /* Alternate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Alternate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EA6FF5012DB5AEF800FA7061 /* AlternateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AlternateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EA6FF50B2DB5AEF800FA7061 /* AlternateUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AlternateUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -58,7 +63,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				alt.metal,
-				Version2.swift,
 			);
 			target = EA6FF50A2DB5AEF800FA7061 /* AlternateUITests */;
 		};
@@ -66,7 +70,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				alt.metal,
-				Version2.swift,
 			);
 			target = EAA7E9D52DB0C88200C5570A /* SimpleSwiftDraw */;
 		};
@@ -158,6 +161,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		06252D1C07089CC2B5CA6E09 /* SimpleSwiftDraw */ = {
+			isa = PBXGroup;
+			children = (
+				AF457C46214B39C0AC2CC9FE /* DLink.metal */,
+			);
+			path = SimpleSwiftDraw;
+			sourceTree = "<group>";
+		};
 		EAA7E9CD2DB0C88200C5570A = {
 			isa = PBXGroup;
 			children = (
@@ -180,6 +191,7 @@
 				EA6FF4F22DB5AEF600FA7061 /* Alternate.app */,
 				EA6FF5012DB5AEF800FA7061 /* AlternateTests.xctest */,
 				EA6FF50B2DB5AEF800FA7061 /* AlternateUITests.xctest */,
+				06252D1C07089CC2B5CA6E09 /* SimpleSwiftDraw */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -203,8 +215,6 @@
 				EA6FF4F32DB5AEF600FA7061 /* Alternate */,
 			);
 			name = Alternate;
-			packageProductDependencies = (
-			);
 			productName = Alternate;
 			productReference = EA6FF4F22DB5AEF600FA7061 /* Alternate.app */;
 			productType = "com.apple.product-type.application";
@@ -226,8 +236,6 @@
 				EA6FF5042DB5AEF800FA7061 /* AlternateTests */,
 			);
 			name = AlternateTests;
-			packageProductDependencies = (
-			);
 			productName = AlternateTests;
 			productReference = EA6FF5012DB5AEF800FA7061 /* AlternateTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -249,8 +257,6 @@
 				EA6FF50E2DB5AEF800FA7061 /* AlternateUITests */,
 			);
 			name = AlternateUITests;
-			packageProductDependencies = (
-			);
 			productName = AlternateUITests;
 			productReference = EA6FF50B2DB5AEF800FA7061 /* AlternateUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -271,8 +277,6 @@
 				EAA7E9D82DB0C88200C5570A /* SimpleSwiftDraw */,
 			);
 			name = SimpleSwiftDraw;
-			packageProductDependencies = (
-			);
 			productName = SimpleSwiftDraw;
 			productReference = EAA7E9D62DB0C88200C5570A /* SimpleSwiftDraw.app */;
 			productType = "com.apple.product-type.application";
@@ -294,8 +298,6 @@
 				EAA7E9E92DB0C88400C5570A /* SimpleSwiftDrawTests */,
 			);
 			name = SimpleSwiftDrawTests;
-			packageProductDependencies = (
-			);
 			productName = SimpleSwiftDrawTests;
 			productReference = EAA7E9E62DB0C88400C5570A /* SimpleSwiftDrawTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -317,8 +319,6 @@
 				EAA7E9F32DB0C88400C5570A /* SimpleSwiftDrawUITests */,
 			);
 			name = SimpleSwiftDrawUITests;
-			packageProductDependencies = (
-			);
 			productName = SimpleSwiftDrawUITests;
 			productReference = EAA7E9F02DB0C88400C5570A /* SimpleSwiftDrawUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -452,6 +452,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7C6600EA4EEBB3F45411A582 /* DLink.metal in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

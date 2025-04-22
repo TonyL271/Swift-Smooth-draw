@@ -1,374 +1,234 @@
 import MetalKit
+import QuartzCore  // for CAMetalDisplayLink
 import SwiftUI
 import UIKit
+import simd  // for SIMD types
 
 @main
-struct MetalDemoApp: App {
-    init() {
-        logger.log("")
-        logger.log("")
-        logger.log("")
-        logger.log("")
-        logger.log("----------- MetalDraw has launched ---------------")
-    }
-
+struct MyMetalApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MetalCanvasView()
+                .edgesIgnoringSafeArea(.all)  // full‑screen
         }
     }
 }
 
-struct ContentView: View {
-    var body: some View {
-        ZStack(alignment: .top) {
-            CanvasHistoryView()
-                .padding()
-                .background(Color.white.opacity(0.8))
-                .cornerRadius(8)
-                .padding()
-        }
+struct MetalCanvasView: UIViewRepresentable {
+    class Coordinator {
+        var renderer: CanvasHistoryRenderer?
     }
-}
 
-struct CanvasHistoryView: UIViewRepresentable {
-    // explicit init so Swift knows how to bind
-    init() {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> MTKView {
-        let mtk = MTKView()
-        mtk.device = MTLCreateSystemDefaultDevice()
-        mtk.framebufferOnly = false
-        mtk.autoResizeDrawable = true
-        mtk.colorPixelFormat = .bgra8Unorm
-        // mtk.isPaused = true
-        mtk.enableSetNeedsDisplay = true // (was already true via default)
-        mtk.delegate = context.coordinator.renderer
-        context.coordinator.renderer.setup(view: mtk)
-        return mtk
+        let mtkView = MTKView(frame: .zero)
+        // keep the renderer alive in the coordinator
+        context.coordinator.renderer = CanvasHistoryRenderer(metalView: mtkView)
+        return mtkView
     }
 
-    func updateUIView(_: MTKView, context _: Context) {}
-
-    class Coordinator {
-        var parent: CanvasHistoryView
-        let renderer: CanvasHistoryRenderer
-
-        init(_ parent: CanvasHistoryView) {
-            self.parent = parent
-            self.renderer = CanvasHistoryRenderer()
-        }
+    func updateUIView(_ uiView: MTKView, context: Context) {
+        // no dynamic updates for now
     }
 }
 
-class CanvasHistoryRenderer: NSObject, MTKViewDelegate {
-    // Types and constants
-    private enum Constants {
-        static let maxPointsPerFrame = 8192
+class CanvasHistoryRenderer: NSObject {
+    private weak var mtkView: MTKView?
+    private var commandQueue: MTLCommandQueue!
+
+    // Render pipeline
+    private var pipelineState: MTLRenderPipelineState!
+    private var vertexBuffer: MTLBuffer!
+    private var uniformBuffer: MTLBuffer!
+
+    // Display‑link variants
+    @available(iOS 17.0, *)
+    private var displayLink: CAMetalDisplayLink?
+    private var fallbackDisplayLink: CADisplayLink?
+
+    // Per‑frame uniform layout must match the Metal shader
+    private struct Uniforms {
+        var color: SIMD4<Float>
     }
 
-    // Metal objects
-    private var device: MTLDevice!
-    private var queue: MTLCommandQueue!
-    weak var metalView: MTKView!
+    init(metalView view: MTKView) {
+        super.init()
+        self.mtkView = view
 
-    private var quadPipeline: MTLRenderPipelineState!
-    private var strokePipeline: MTLRenderPipelineState!
-    // used every frame
-    private var quadVB: MTLBuffer!
-    private var strokeVB: MTLBuffer!
+        // 1) Create the Metal device & command queue
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            fatalError("Metal not supported on this device")
+        }
+        view.device = device
 
-    // Canvas state
-    private var history: [MTLTexture] = []
-    private var currentIdx = 0
-    var pendingPoints: [SIMD2<Float>] = []
+        // Cap at 120fps if available
+        view.preferredFramesPerSecond = 120
 
-    // Display link
-    private var displayLink: CADisplayLink?
+        self.commandQueue = device.makeCommandQueue()
 
-    // MARK: - - Public API
+        // 2) Build our render pipeline & buffers
+        self.setupPipeline(
+            with: device, colorPixelFormat: view.colorPixelFormat)
 
-    func enqueue(points: [SIMD2<Float>]) {
-        self.pendingPoints.append(contentsOf: points)
-        //        self.metalView.setNeedsDisplay(
-        //            CanvasHistoryRenderer.dirtyRect(from: points))
+        // 3) Hook up the appropriate display link
+        self.setupDisplayLink(for: view)
+        logger.ilog("viisted init")
     }
 
-    // MARK: - - Setup
+    private func setupPipeline(
+        with device: MTLDevice, colorPixelFormat: MTLPixelFormat
+    ) {
+        // Load the .metal file from the app bundle
+        guard let library = device.makeDefaultLibrary() else {
+            fatalError("Could not load default Metal library")
+        }
+        guard
+            let vFunc = library.makeFunction(name: "vertex_main"),
+            let fFunc = library.makeFunction(name: "fragment_main")
+        else {
+            fatalError("Could not find shader functions in library")
+        }
 
-    func setup(view: MTKView) {
-        self.metalView = view
-        guard let dev = view.device else { fatalError("Metal not supported") }
-        self.device = dev
-        self.queue = self.device.makeCommandQueue()
+        let pDesc = MTLRenderPipelineDescriptor()
+        pDesc.vertexFunction = vFunc
+        pDesc.fragmentFunction = fFunc
+        pDesc.colorAttachments[0].pixelFormat = colorPixelFormat
 
-        let library = self.device.makeDefaultLibrary()!
+        do {
+            self.pipelineState = try device.makeRenderPipelineState(
+                descriptor: pDesc)
+        } catch {
+            fatalError("Failed to create pipeline state: \(error)")
+        }
 
-        // 1) Full‑screen quad pipeline
-        let quadDesc = MTLRenderPipelineDescriptor()
-        quadDesc.vertexFunction = library.makeFunction(
-            name: "vertex_passthrough")
-        quadDesc.fragmentFunction = library.makeFunction(
-            name: "fragment_texture")
-        quadDesc.colorAttachments[0].pixelFormat = view.colorPixelFormat
-        self.quadPipeline = try! self.device.makeRenderPipelineState(
-            descriptor: quadDesc)
-
-        // 2) Stroke pipeline with alpha blending
-        let strokeDesc = MTLRenderPipelineDescriptor()
-        strokeDesc.vertexFunction = library.makeFunction(name: "vertex_stroke")
-        strokeDesc.fragmentFunction = library.makeFunction(
-            name: "fragment_stroke")
-
-        strokeDesc.colorAttachments[0].pixelFormat = view.colorPixelFormat
-        strokeDesc.colorAttachments[0]!.isBlendingEnabled = false
-        self.strokePipeline = try! self.device.makeRenderPipelineState(
-            descriptor: strokeDesc)
-
-        // 3) Quad vertex buffer
-        let quadVerts: [Float] = [
-            -1, -1, 0, 1,
-            1, -1, 1, 1,
-            -1, 1, 0, 0,
-            1, 1, 1, 0,
+        // Fullscreen triangle (in clip space)
+        let verts: [SIMD2<Float>] = [
+            [-1, -1],
+            [3, -1],
+            [-1, 3],
         ]
-        self.quadVB = self.device.makeBuffer(
-            bytes: quadVerts,
-            length: quadVerts.count * MemoryLayout<Float>.stride,
+        self.vertexBuffer = device.makeBuffer(
+            bytes: verts,
+            length: MemoryLayout<SIMD2<Float>>.stride * verts.count,
             options: []
         )
 
-        self.strokeVB = self.device.makeBuffer(
-            length: Constants.maxPointsPerFrame
-                * MemoryLayout<SIMD2<Float>>.stride,
-            options: .storageModeShared
+        // Uniform buffer for a single float4
+        self.uniformBuffer = device.makeBuffer(
+            length: MemoryLayout<Uniforms>.size,
+            options: []
         )
-
-        // 4) Allocate history textures
-        self.resizeHistoryTextures(size: view.drawableSize)
-        self.setupPencilInput(view: view)
-
-        self.createDisplayLink()
     }
 
-    func createDisplayLink() {
-        let displayLink = CADisplayLink(
-            target: self,
-            selector: #selector(self.step)
-        )
+    private func setupDisplayLink(for view: MTKView) {
+        if #available(iOS 17.0, *) {
+            // iOS17+ Metal display link
+            guard let layer = view.layer as? CAMetalLayer else {
+                fatalError("MTKView.layer is not a CAMetalLayer")
+            }
+            let link = CAMetalDisplayLink(metalLayer: layer)
+            link.delegate = self
 
-        displayLink.add(
-            to: RunLoop.main,
-            forMode: .common
-        )
-        displayLink.isPaused = true
-        self.displayLink = displayLink
-    }
+            link.add(to: .main, forMode: .common)
 
-    func pauseDisplayLink() {
-        self.displayLink?.isPaused = true
-    }
-
-    func unPauseDisplayLink() {
-        self.displayLink?.isPaused = false
-    }
-
-    @objc
-    func step(displayLink: CADisplayLink) {
-        self.metalView.draw()
-        let timeOverSpent = CACurrentMediaTime() - displayLink.targetTimestamp
-        if timeOverSpent >= 0 {
-            let actualFramesPerSecond =
-                1 / (displayLink.targetTimestamp - displayLink.timestamp)
-            logger.ilog("too long, spent: ", timeOverSpent)
-            logger.ilog("rendered fps: ", actualFramesPerSecond)
+            link.isPaused = false  // start immediately
+            self.displayLink = link
+        } else {
+            // Fallback CADisplayLink → solid green clear
+            let link = CADisplayLink(
+                target: self,
+                selector: #selector(self.fallbackRender(_:))
+            )
+            link.preferredFramesPerSecond = view.preferredFramesPerSecond
+            link.add(to: .main, forMode: .common)
+            link.isPaused = false
+            self.fallbackDisplayLink = link
         }
     }
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        self.resizeHistoryTextures(size: size)
-        self.setupPencilInput(view: view)
-    }
+    // MARK: – Dynamic render
 
-    // MARK: ‑‑ MTKViewDelegate
-
-    func draw(in view: MTKView) {
-        autoreleasepool {
-            let cpuStart = CACurrentMediaTime()
-
-            guard let drawable = view.currentDrawable else { return }
-            guard self.history.count == 2 else { return }
-
-            let c1 = CACurrentMediaTime()
-            let cmd = self.queue.makeCommandBuffer()!
-
-            let c2 = CACurrentMediaTime()
-            if self.pendingPoints.isEmpty {
-                self.present(
-                    texture: self.history[self.currentIdx],
-                    on: drawable, with: view,
-                    commandBuffer: cmd
-                )
-                cmd.commit()
-
-                return
-            }
-
-            let c3 = CACurrentMediaTime()
-
-            // Unsure about this
-            let nextIdx = (currentIdx + 1) & 1
-
-            let dirty = CanvasHistoryRenderer.dirtyRect(from: self.pendingPoints)
-            let origin = MTLOrigin(x: Int(dirty.minX), y: Int(dirty.minY), z: 0)
-            let size = MTLSize(
-                width: Int(dirty.width), height: Int(dirty.height), depth: 1
-            )
-
-            // Copy only the dirty region
-            let blit = cmd.makeBlitCommandEncoder()!
-            blit.copy(
-                from: self.history[self.currentIdx],
-                sourceSlice: 0, sourceLevel: 0,
-                sourceOrigin: origin, sourceSize: size,
-                to: self.history[nextIdx],
-                destinationSlice: 0, destinationLevel: 0,
-                destinationOrigin: origin
-            )
-            blit.endEncoding()
-
-            // —— Phase 1b: Draw new strokes into history[nextIdx] ——
-
-            self.pendingPoints.withUnsafeBufferPointer { buf in
-                guard let src = buf.baseAddress else { return }
-                let bytes = buf.count * MemoryLayout<SIMD2<Float>>.stride
-                memcpy(self.strokeVB.contents(), src, bytes)
-            }
-
-            let pass = MTLRenderPassDescriptor()
-            pass.colorAttachments[0].texture = self.history[nextIdx]
-            pass.colorAttachments[0].loadAction = .load
-            pass.colorAttachments[0].storeAction = .store
-            let enc = cmd.makeRenderCommandEncoder(descriptor: pass)!
-            enc.setRenderPipelineState(self.strokePipeline)
-            enc.setVertexBuffer(self.strokeVB, offset: 0, index: 0)
-            enc.drawPrimitives(
-                type: .point,
-                vertexStart: 0,
-                vertexCount: self.pendingPoints.count
-            )
-            enc.endEncoding()
-            self.pendingPoints.removeAll()
-
-            self.present(
-                texture: self.history[nextIdx], on: drawable, with: view,
-                commandBuffer: cmd
-            )
-            let cpuEnd = CACurrentMediaTime()
-            var gpuStart: Double = CACurrentMediaTime()
-            cmd.addScheduledHandler { _ in
-                gpuStart = CACurrentMediaTime()
-            }
-
-            cmd.addCompletedHandler { _ in
-
-                let gpuEnd = CACurrentMediaTime()
-                logger.ilog("total render Time: ", gpuEnd - cpuStart)
-                logger.ilog("CPU Time: ", cpuEnd - cpuStart)
-                logger.ilog(" --> C1 Time: ", c1 - cpuStart)
-                logger.ilog(" --> C2 Time: ", c2 - c1)
-                logger.ilog(" --> C3 Time: ", c3 - c2)
-                logger.ilog(" --> END Time: ", cpuEnd - c3)
-                logger.ilog("GPU Time: ", gpuEnd - gpuStart)
-                logger.ilog(" -> GPU wait for CPU: ", gpuStart - cpuEnd)
-                logger.ilog("Budget: ", 1 / 120)
-            }
-
-            cmd.commit()
-            self.currentIdx = nextIdx
-        }
-    }
-
-    // MARK: ‑‑ Helpers
-
-    private func present(
-        texture: MTLTexture, on drawable: CAMetalDrawable, with view: MTKView,
-        commandBuffer cmd: MTLCommandBuffer
+    private func render(
+        drawable: CAMetalDrawable,
+        at timestamp: CFTimeInterval,
+        duration: CFTimeInterval
     ) {
-        guard let passDesc = view.currentRenderPassDescriptor else { return }
+        let renderStartTime = CACurrentMediaTime()
+        guard let cb = commandQueue.makeCommandBuffer() else { return }
 
-        passDesc.colorAttachments[0].texture = drawable.texture
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        passDesc.colorAttachments[0].storeAction = .store
+        // Manually build a render‑pass descriptor
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture = drawable.texture
+        rpd.colorAttachments[0].loadAction = .clear
 
-        let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc)!
-        enc.setRenderPipelineState(self.quadPipeline)
-        enc.setVertexBuffer(self.quadVB, offset: 0, index: 0)
-        enc.setFragmentTexture(texture, index: 0)
-        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        enc.endEncoding()
+        // Compute a smooth, looping color
+        let t = Float(timestamp)
+        let r = abs(sin(t))
+        let g = abs(sin(t + 2.0))
+        let b = abs(sin(t + 4.0))
+        var uni = Uniforms(color: SIMD4<Float>(r, g, b, 1))
 
-        cmd.present(drawable)
+        // Update our uniform buffer
+        memcpy(self.uniformBuffer.contents(), &uni, MemoryLayout<Uniforms>.size)
+
+        // Encode a clear‑and‑draw pass
+        rpd.colorAttachments[0].loadAction = .clear
+        // (the clear color is ignored once you draw a fullscreen triangle)
+
+        let encoder = cb.makeRenderCommandEncoder(descriptor: rpd)!
+        encoder.setRenderPipelineState(pipelineState)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+
+        // present *this* drawable
+        cb.present(drawable)
+        cb.addCompletedHandler { buffer in
+            let renderDoneTime = CACurrentMediaTime()
+            logger.ilog(
+                "time it took to render the frame: ",
+                renderDoneTime - renderStartTime)
+        }
+        cb.commit()
     }
 
-    private func resizeHistoryTextures(size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        let width = Int(size.width.rounded(.up))
-        let height = Int(size.height.rounded(.up))
+    // MARK: – Fallback render (green only)
 
-        self.history.removeAll()
+    @objc private func fallbackRender(_: CADisplayLink) {
 
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        desc.usage = [.renderTarget, .shaderRead, .shaderWrite]
-        desc.storageMode = .private
+        guard
+            let view = mtkView,
+            let drawable = view.currentDrawable,
+            let rpd = view.currentRenderPassDescriptor,
+            let cb = commandQueue.makeCommandBuffer()
+        else { return }
 
-        self.history = (0 ..< 2).compactMap { _ in
-            self.device.makeTexture(descriptor: desc)
-        }
-        self.currentIdx = 0
+        // Just clear to green
+        rpd.colorAttachments[0].loadAction = .clear
+        rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 1, 0, 1)
 
-        // clear the first texture so canvas starts empty
-        let cmd = self.queue.makeCommandBuffer()!
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = self.history[0]
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        // Setup and finish encoding
-        let enc = cmd.makeRenderCommandEncoder(descriptor: pass)!
-        enc.endEncoding()
-        cmd.commit()
-
-        self.currentIdx = 0
+        let encoder = cb.makeRenderCommandEncoder(descriptor: rpd)!
+        encoder.endEncoding()
+        cb.present(drawable)
+        cb.commit()
     }
+}
 
-    private static func dirtyRect(from vertices: [SIMD2<Float>]) -> CGRect {
-        guard let first = vertices.first else { return .zero }
-        var minX = first.x
-        var minY = first.y
-        var maxX = first.x
-        var maxY = first.y
-        for v in vertices.dropFirst() {
-            minX = min(minX, v.x)
-            minY = min(minY, v.y)
-            maxX = max(maxX, v.x)
-            maxY = max(maxY, v.y)
-        }
-        let normalize = PencilInputView.normalisedPoint
+// MARK: – CAMetalDisplayLinkDelegate
 
-        let left = CGFloat(floor(minX))
-        let top = CGFloat(floor(minY))
-        let right = CGFloat(ceil(maxX))
-        let bottom = CGFloat(ceil(maxY))
-        return CGRect(
-            x: left, y: top, width: right - left, height: bottom - top
-        )
+@available(iOS 17.0, *)
+extension CanvasHistoryRenderer: CAMetalDisplayLinkDelegate {
+    func metalDisplayLink(
+        _ link: CAMetalDisplayLink,
+        needsUpdate update: CAMetalDisplayLink.Update
+    ) {
+        let drawable = update.drawable
+        let timestamp = update.targetTimestamp
+        let duration = update.targetPresentationTimestamp - timestamp
+        self.render(drawable: drawable, at: timestamp, duration: duration)
     }
 }
